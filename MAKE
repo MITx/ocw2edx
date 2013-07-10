@@ -1,0 +1,3 @@
+python scholar2xbundle.py
+python xbundle.py convert 9.00SC_xbundle.xml .
+cp -a 9.00SC/* ..
