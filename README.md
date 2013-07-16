@@ -2,6 +2,7 @@ ocw2edx
 =======
 
 Convert OCW Scholar Content to edX XML
+
 The following process will convert an existing OCW/OCW Scholar course into edX xml which can then be imported into edX Studio or used in the github/staging workflow.
 
 The process includes executing two python scripts:
