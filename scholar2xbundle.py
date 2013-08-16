@@ -24,6 +24,12 @@ class ScholarCourse(object):
 
     def __init__(self, dir='.'):
         self.dir = path(dir)
+
+        if not os.path.exists(self.dir / 'contents/Syllabus'):
+            if os.path.exists(self.dir / 'contents/syllabus'):
+                os.symlink('syllabus', self.dir / 'contents/Syllabus')
+                print "Made a symlink from contents/syllabus to contents/Syllabus"
+
         self.indexfn = self.dir / 'contents/Syllabus/index.htm'
         self.index_xml = etree.parse(self.dir / 'contents/index.htm.xml').getroot()
         self.meta = self.get_metadata()
@@ -199,18 +205,31 @@ class ScholarCourse(object):
         '''
         Create vertical and fill up with contents of a section of a chapter.
         We are given the <a> for the OCW section, and the XML handle for the
-        sequential where the contens should go.
+        sequential where the contents should go.
 
         sxml = seq <a> from scholar
         seq = edX sequential
         '''
         href = sxml.get('href')
         sfn = href.replace('../../','')
+        display_nam = "Introduction"
+
         print "  sfn=",sfn
         v = fsbs(open(self.dir / sfn).read())	# load in the section HTML file
         nav = v.find('.//div[@id="parent-fieldname-text"]') 
+        if nav is None:
+            print "    Oops, no parent-fieldname-text for vertical in %s ; maybe not scholar course?" % sfn
+            print "    Trying OCW's course_inner_section"
+            nav = v.find('.//div[@id="course_inner_section"]') 
+            if nav is None:
+                print "not found, skipping"
+                return
+            print "        Found!  Continuing."
+            title = v.find('.//span[@id="parent-fieldname-title"]') 
+            display_name = title.text.strip()
+
         intro = etree.SubElement(seq, 'html')	# add HTML module in the edX xml tree
-        intro.set('display_name','Introduction')
+        intro.set('display_name', display_name)
         for p in nav:				# include all content in the HTML as an introduction
             if p.get('class','') in ['sc_nav', 'sc_nav_bottom']:
                 continue
