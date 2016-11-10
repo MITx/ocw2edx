@@ -333,7 +333,6 @@ class OCWCourse(object):
             else:
                 caption_url = "https://ocw.mit.edu" + m.group(1)
                 extra_dict = {'caption_url': caption_url}
-                self.get_caption_file(caption_url)
 
         script = main_elem.findall('.//script')[1]
         if script is None:
@@ -375,7 +374,9 @@ class OCWCourse(object):
                 captions_url = captions_url[1:-1]
             caption_url = "https://ocw.mit.edu" + captions_url
             extra_dict['caption_url'] = caption_url
-            srtfn = self.get_caption_file(caption_url, ytid)
+
+        if 'caption_url' in extra_dict:
+            srtfn = self.get_caption_file(extra_dict['caption_url'], ytid)
 
         for k, v in extra_dict.items():
             video.set(k, v)
