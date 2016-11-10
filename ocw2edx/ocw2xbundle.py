@@ -169,7 +169,9 @@ class OCWCourse(object):
     def do_href(self, elem):
         '''
         fix href and src in element elem to point to /static
-        copy static thing to /static directory
+        copy static files to /static directory
+
+        Also fix any src in <script> elements
         '''
         #print "elem: %s" % elem
         for a in elem.findall('.//a'):
@@ -181,7 +183,26 @@ class OCWCourse(object):
             src = self.fix_static(img.get('src',''))
             if src:
                 img.set('src',src)
-        
+
+    def fix_javascript(self, elem):
+        njs = 0
+        ndrop = 0
+        js_to_drop = ["https://ocw.mit.edu/scripts/jquery-.*.js"]
+        for script in elem.findall('.//script[@type="text/javascript"]'):
+            njs += 1
+            src = self.fix_static(script.get('src',''))
+            for pat in js_to_drop:
+                if re.match(pat, src):
+                    print "        WARNING: <script> asks for src=%s, which breaks things - dropping!" % (src)
+                    script.getparent().remove(script)
+                    ndrop += 1
+                    continue
+            if src:
+                script.set('src', src)
+            if script.text and '\r' in script.text:
+                print "        WARNING: javascript has ^M in it - trying to fix"
+                script.text = script.text.replace('\r', '')
+        print "        Found and fixed %d javascript sections; dropped %d sections" % (njs, ndrop)
     
     def add_video_to_vert_from_popup(self, vxml, vert):
         '''
@@ -203,7 +224,7 @@ class OCWCourse(object):
         html = etree.SubElement(vert, 'html')
         aelem = etree.SubElement(html, 'a')
         aelem.set('href', newpath)
-        html.text = text
+        aelem.text = text
         if self.verbose:
             print "      html link: %s = %s" % (dn, newpath)
 
@@ -248,8 +269,13 @@ class OCWCourse(object):
             return
 
         if vfn.startswith('http://') or vfn.startswith('https://'):
+            html = etree.SubElement(vert, 'html')
+            aelem = etree.SubElement(html, 'a')
+            aelem.set('href', vfn)
+            aelem.text = vxml.text
+            print "        External link %s -> %s" % (aelem.text, vfn)
             return
-
+            
         # process html file
         try:
             fn = self.dir / vfn
@@ -357,9 +383,11 @@ class OCWCourse(object):
         ytid = m.group(1)
         video = etree.SubElement(vert,'video')
         video.set('youtube','1.0:%s' % ytid)
-        video.set('from','00:00:20')
+        video.set('from', self.DefaultVideoStartPoint)
 
-        m = re.search('load_multiple_media_chapter\(.*,([ 0-9]+),([ 0-9]+),\s(null|.*\.srt\')\);', element_text)
+        m = re.search('load_multiple_media_chapter\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);', element_text)
+        if not m:
+            m = re.search('scholar_video_popup\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);', element_text)
         if m:
             # print "    ", popup
             def sec2code(secstr):
@@ -367,13 +395,17 @@ class OCWCourse(object):
                 c = '%02d:%02d:%02d' % (sec/3600, (sec/60)%60, sec%60)
                 # print "      %s (%s) -> %s" % (secstr, sec, c)
                 return c
-            video.set('from',sec2code(m.group(1)))
-            video.set('to',sec2code(m.group(2)))
+            if m.group(2) != "0":
+                video.set('from',sec2code(m.group(1)))
+                video.set('to',sec2code(m.group(2)))
             captions_url = m.group(3)
             if captions_url.startswith("'"):
                 captions_url = captions_url[1:-1]
             caption_url = "https://ocw.mit.edu" + captions_url
             extra_dict['caption_url'] = caption_url
+        else:
+            if self.verbose and 'caption_url' not in extra_dict:
+                print "        no caption found in %s" % element_text
 
         if 'caption_url' in extra_dict:
             srtfn = self.get_caption_file(extra_dict['caption_url'], ytid)
@@ -443,6 +475,7 @@ class OCWCourse(object):
         '''
         Process HTML section of OCW course content (turn into verticals, possibly wth video)
         '''
+        self.fix_javascript(ocw_xml)
         intro = etree.SubElement(seq, 'html')	# add HTML module in the edX xml tree
         if self.verbose:
             print '    Adding html: %s' % title
@@ -712,7 +745,7 @@ class OCWCourse(object):
         self.get_course_image()
         
         # make xbundle 
-        xb = XBundle()
+        xb = XBundle(force_studio_format=True)
         xb.DefaultOrg = self.DefaultOrg
         xb.set_course(edxxml)
         xb.add_policies(policies)
