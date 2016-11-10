@@ -86,6 +86,18 @@ class OCWCourse(object):
             sys.stdout.flush()
         self.export()
 
+    @staticmethod
+    def parse_broken_html(xmlstr=None, fn=None, parser_type='html', parser=None):
+        '''
+        Parse broken HTML, either using lxml's HTML parser, or using BeautifulSoup
+        '''
+        xmlstr = xmlstr or open(fn).read()
+        if parser_type=="bs":
+            return fsbs(xmlstr)
+        elif parser_type=="html":
+            parser = parser or etree.HTMLParser()
+            return etree.fromstring(xmlstr, parser=parser)
+
     def get_caption_file(self, url):
         '''
         Retrieve srt caption file from OCW, convert to sjson, and store in static
@@ -114,20 +126,23 @@ class OCWCourse(object):
         '''
         Fix a static path.  Return new static path.
         '''
-        newpath = re.sub('[\./]+/contents/','/static/',s)
+        m = re.match('[\./]+/(contents|common|[^/ ]+)/.*', s)
+        if not m:
+            print "      WARNING: unknown static file path %s" % s
+            return s
+        prefix = m.group(1)
+        newpath = re.sub('[\./]+/%s/' % prefix, '/static/', s)
         if newpath.startswith('/static'):
-            spath = self.dir / 'contents' + newpath[7:]
+            spath = self.dir / prefix + newpath[7:]
             epath = newpath[1:]
             if not os.path.exists(spath):	# source path doesn't exist!
                 print "      ERROR: missing file %s (for %s)" % (spath, epath)
                 return ""
-            if not os.path.exists(epath):
-                # print "%s -> %s" % (spath, epath)
-                os.system('mkdir -p "%s"' % os.path.dirname(epath))
-                # os.system('cp %s %s' % (spath,epath))
-                self.files_to_copy[spath] = epath
+            self.files_to_copy[spath] = epath
             return newpath
-        return ''
+        else:
+            print "    ERROR: failed static path %s -> new path %s" % (s, newpath)
+        return s
 
 
     def do_href(self, elem):
@@ -213,7 +228,7 @@ class OCWCourse(object):
         # process html file
         try:
             fn = self.dir / vfn
-            vcontents = fsbs(open(fn).read())
+            vcontents = self.parse_broken_heml(fn=fn)
         except Exception as err:
             print "      ERROR reading %s: %s" % (fn, err)
             return
@@ -354,7 +369,7 @@ class OCWCourse(object):
         '''
         Digest single OCW media file and process as video for edX XML
         '''
-        cxml = fsbs(open(fn).read())
+        cxml = self.parse_broken_html(fn=fn)
         main = cxml.find('.//main[@id="course_inner_media"]')
         if main is None:
             print "--> Error - no course_inner_media found in file %s" % fn
@@ -402,6 +417,34 @@ class OCWCourse(object):
         if len(intro)==0:
             intro.getparent().remove(intro)	# remove intro if empty
 
+    def robust_get_main(self, fn, ocw_xml, idname, tags=None):
+        '''
+        The OCW XML is full of XML errors, e.g. with unclosed img tags, and improperly formatted attributes.
+        Try to get a <main> or <div> with the specified id=idname, robustly.  That is,
+        if the length of the found element is zero, then get its parent instead.
+
+        fn = filename (for error messages)
+        ocw_xml = etree element for the OCW xml
+        idname = string giving element id to look for
+        tags = list of element tags to look for (defaults to ["div", "main"])
+        '''
+        tags = tags or ["div", "main"]
+        for tag in tags:
+            elem = ocw_xml.find('.//%s[@id="%s"]' % (tag, idname))
+            if elem is not None:
+                break
+        if elem is None:
+            return None
+        if len(elem)==0:
+            if self.verbose:
+                print "        Warning - badly formatted XML in file %s for %s" % (fn, etree.tostring(elem))
+                sys.stdout.flush()
+            elem = elem.getparent()
+            if self.verbose:
+                print "            Using parent %s instead - has %d children" % (elem.tag, len(elem))
+                sys.stdout.flush()
+        return elem
+
     def do_verticals(self, sxml, seq):
         '''
         Create vertical and fill up with contents of a section of a chapter.
@@ -420,7 +463,7 @@ class OCWCourse(object):
         display_name = "Introduction"
 
         print "  Reading vertical from file %s" % xmlfn
-        v = fsbs(open(xmlfn).read())	# load in the section HTML file
+        v = self.parse_broken_html(fn=xmlfn)	# load in the section HTML file
 
         title = v.find('.//span[@id="parent-fieldname-title"]') 
         display_name = title.text.strip()
@@ -429,17 +472,13 @@ class OCWCourse(object):
 
         nav = v.find('.//div[@id="parent-fieldname-text"]') 
         if nav is None:
-            nav = v.find('.//div[@id="course_inner_section"]') 
-            if nav is None:
-                nav = v.find('.//main[@id="course_inner_section"]') 
+            nav = self.robust_get_main(xmlfn, v, "course_inner_section")
         if nav is not None:
             self.process_html(title, display_name, nav, seq, handle_broken_xml=True)
             found_elements.append("html")
 
         if self.include_media:
-            nav = v.find('.//div[@id="course_inner_media_gallery"]') 
-            if nav is None:
-                nav = v.find('.//main[@id="course_inner_media_gallery"]') 
+            nav = self.robust_get_main(xmlfn, v, "course_inner_media_gallery")
             if nav is not None:
                 self.process_media_gallery(title, display_name, nav, seq)
                 found_elements.append("media")
@@ -556,12 +595,10 @@ class OCWCourse(object):
     
     def get_course_image(self):
         fn = self.dir/'contents/index.htm'
-        root = fsbs(open(fn).read())
-        div = root.find('.//div[@id="course_inner_chp"]')
+        root = self.parse_broken_html(fn=fn)
+        div = self.robust_get_main(fn, root, "course_inner_chp")
         if div is None:
-            div = root.find('.//main[@id="course_inner_chp"]')
-            if div is None:
-                raise Exception("[OCWCourse.get_course_image] Cannot find course_inner_chp in %s" % fn)
+            raise Exception("[OCWCourse.get_course_image] Cannot find course_inner_chp in %s" % fn)
         img = div.find('.//img[@itemprop="image"]')
         fn = img.get('src')
         fn = fn[3:]	# remove ../
@@ -595,7 +632,7 @@ class OCWCourse(object):
         sys.stderr.write("metadata = %s\n" % meta)
     
         fn = self.dir / 'contents/Syllabus/index.htm'
-        sxml = fsbs(open(fn).read())
+        sxml = self.parse_broken_html(fn=fn)
         edxxml = etree.Element('course')
         edxxml.set('dirname',os.path.basename(os.getcwd()))
         edxxml.set('semester', self.DefaultSemester)
@@ -635,6 +672,9 @@ class OCWCourse(object):
             os.system(cmd)
             shutil.rmtree(tempd)
         else:
+            if not os.path.exists(outfn):
+                print "Making directory for output: %s" % outfn
+                os.mkdir(outfn)
             self.copy_static_files(outfn)
             xb.export_to_directory(outfn, dir_include_course_id=False)
         print "Done, wrote to %s" % outfn
