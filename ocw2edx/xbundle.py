@@ -532,6 +532,10 @@ class XBundle(object):
         for m,v in map.items():
             for ch in m:
                 s = s.replace(ch,v)
+        allowed_chars = string.lowercase + string.uppercase + string.digits + "_"
+        for ch in s:
+            if ch not in allowed_chars:
+                s = s.replace(ch, '_')
         if dn and s in self.urlnames and parent:
             s += '_' + parent
         while s in self.urlnames:
