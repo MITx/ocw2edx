@@ -40,8 +40,7 @@ DEF_POLICY_JSON = """
         "tabs": [ {"type": "courseware"},
                   {"name": "Course Info", "type": "course_info"},
                   {"name": "Discussion", "type": "discussion"},
-                  {"name": "Progress", "type": "progress"},
-                  {"name": "Staff Grading", "type": "staff_grading"}
+                  {"name": "Progress", "type": "progress"}
                 ],
 	"remote_gradebook": {
 	    "name" : "STELLAR:/project/mitxdemosite",
@@ -526,7 +525,7 @@ class XBundle(object):
         s += " " + xml.tag
         s = s.encode('ascii', 'xmlcharrefreplace')
         map = {'"\':<>?|![]': '',
-               ',/().;=+ ': '_',
+               ',/().;=+ #': '_',
                '/': '__',
                '&': 'and',
                }

@@ -27,16 +27,22 @@ class OCWCourse(object):
     '''
     DefaultSemester = 'course'
     DefaultOrg = "OCW"
+    # DefaultVideoStartPoint = '00:00:20'
+    DefaultVideoStartPoint = '00:00:04'
 
-    def __init__(self, fn=None, ofn=None, verbose=True, include_media=True):
+    def __init__(self, fn=None, ofn=None, verbose=True, include_media=True, video_start_offset=0):
         '''
         fn = directory of input OCW content files, or input zip filename
         ofn = edX XML output directory name, or output xbundle XML filename (*.xml), or output .tar.gz filename
+        include_media = boolean: if False, then skip inclusion of media gallery sections (default True)
+        video_start_offset = int: number of seconds to skip at start of each video (default 0)
 
         After instantiating, call process() to generate the output.
         '''
         self.verbose = verbose
         self.include_media = include_media
+        self.DefaultVideoStartPoint = "00:00:%02d" % int(video_start_offset)
+
         if self.verbose:
             print "=" * 77
             print "Processing input OCW course data file %s" % fn
@@ -91,6 +97,11 @@ class OCWCourse(object):
         '''
         Parse broken HTML, either using lxml's HTML parser, or using BeautifulSoup
         '''
+        if not xmlstr and not os.path.exists(fn):
+            if fn.startswith("../"):
+                fn = fn[3:]
+            if not os.path.exists(fn):
+                raise Exception("ERROR!  Missing OCW content file %s" % fn)
         xmlstr = xmlstr or open(fn).read()
         if parser_type=="bs":
             return fsbs(xmlstr)
@@ -126,6 +137,8 @@ class OCWCourse(object):
         '''
         Fix a static path.  Return new static path.
         '''
+        if not s:
+            return s
         m = re.match('[\./]+/(contents|common|[^/ ]+)/.*', s)
         if not m:
             print "      WARNING: unknown static file path %s" % s
@@ -175,7 +188,7 @@ class OCWCourse(object):
         ytid = m.group(1)
         video = etree.SubElement(vert, 'video')
         video.set('youtube','1.0:%s' % ytid)
-        video.set('from','00:00:20')	# default start point
+        video.set('from', self.DefaultVideoStartPoint)	# default start point (skip OCW banner)
 
         m = re.search('load_multiple_media_chapter\(.*,([ 0-9]+),([ 0-9]+),\snull\);', popup)
         if m:
@@ -199,17 +212,28 @@ class OCWCourse(object):
         '''
         newpath = self.fix_static('../' + pdffn)
         dn = text.strip()
-        html = etree.XML('<html><a href="%s">%s</a></html>' % (newpath, dn))
+        html = etree.SubElement(vert, 'html')
+        aelem = etree.SubElement(html, 'a')
+        aelem.set('href', newpath)
+        html.text = text
         if self.verbose:
             print "      html link: %s = %s" % (dn, newpath)
-        vert.append(html)
 
+    def add_text_to_vert(self, text_elem, vert):
+        '''
+        Add <html> with text to vertical
+        '''
+        textstr = etree.tostring(text_elem)
+        html = etree.XML('<html>%s</html>' % (textstr))
+        if self.verbose:
+            print "      short html: %s" % (textstr)
+        vert.append(html)
 
     def add_contents_to_vert(self, vxml, vert):
         '''
         Create a module (video or html) for the block contents of a section of an OCW chapter.
 
-        vxml = vert <a> from scholar
+        vxml = vert <a> from OCW
         vert = edX vertical
         '''
         # if the <a> has a onclick with youtube in it, then make a <video>
@@ -219,22 +243,40 @@ class OCWCourse(object):
             
         # otherwise follow the href link and process the file
         href = vxml.get('href')
-        
+        if href is None or not href:
+            print "        ERROR: missing link in content %s" % etree.tostring(vxml)
+            return self.add_text_to_vert(vxml, vert)
+
         vfn = re.sub('[\./]+/contents/','contents/', href)
         if vfn.endswith('.pdf'):
-            self.add_pdf_link_to_vert(vfn, vxml.text, vert)
+            try:
+                self.add_pdf_link_to_vert(vfn, vxml.text, vert)
+            except Exception as err:
+                print "Error adding pdf link in vertical, vfn=%s, text=%s" % (vfn, vxml.text)
+                print "error=%s" % str(err)
+            return
+
+        if vfn.endswith('.srt'):
+            return
+
+        if vfn.startswith('http://') or vfn.startswith('https://'):
             return
 
         # process html file
         try:
             fn = self.dir / vfn
-            vcontents = self.parse_broken_heml(fn=fn)
+            vcontents = self.parse_broken_html(fn=fn)
         except Exception as err:
             print "      ERROR reading %s: %s" % (fn, err)
             return
-        nav = vcontents.find('.//div[@id="parent-fieldname-text"]') # v.find('.//p[@class="sc_nav"]')
         html = etree.SubElement(vert,'html')
         html.set('display_name',vert.get('display_name','Page'))
+        nav = vcontents.find('.//div[@id="parent-fieldname-text"]') # v.find('.//p[@class="sc_nav"]')
+        if nav is None:
+            nav = self.robust_get_main(fn, vcontents, "course_inner_section")
+        if nav is None:
+            print "        ERROR: missing div parent-fieldname-text for nav in %s" % fn
+            return
         for p in nav:
             # print etree.tostring(p,pretty_print=True)
             if p.get('class','') in ['sc_nav', 'sc_nav_bottom']:
@@ -268,6 +310,9 @@ class OCWCourse(object):
             title = vert.get('display_name')
         else:
             title = prev.text
+        if not title:
+            print "        WARNING: missing title for video for %s" % etree.tostring(embedbg)
+            title = ""
         
         # get the youtube ID
         script = embedbg.find('.//script')
@@ -339,6 +384,9 @@ class OCWCourse(object):
         '''
         sfn = href.replace('../../','')
         xmlfn = self.dir / sfn
+        if not os.path.exists(xmlfn):
+            sfn = href.replace('../','')
+            xmlfn = self.dir / sfn
         return xmlfn
 
     def process_media_gallery(self, title, display_name, ocw_xml, seq):
