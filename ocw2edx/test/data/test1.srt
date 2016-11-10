@@ -1,0 +1,48 @@
+1
+00:00:00,000 --> 00:00:00,060
+
+2
+00:00:00,060 --> 00:00:01,670
+The following
+content is provided
+
+3
+00:00:01,670 --> 00:00:03,810
+under a Creative
+Commons license.
+
+4
+00:00:03,810 --> 00:00:06,540
+Your support will help MIT
+OpenCourseWare continue
+
+5
+00:00:06,540 --> 00:00:10,120
+to offer high quality
+educational resources for free.
+
+6
+00:00:10,120 --> 00:00:12,690
+To make a donation or to
+view additional materials
+
+7
+00:00:12,690 --> 00:00:16,590
+from hundreds of MIT courses,
+visit MIT OpenCourseWare
+
+8
+00:00:16,590 --> 00:00:17,305
+at ocw.mit.edu.
+
+9
+00:00:17,305 --> 00:00:21,246
+
+10
+00:00:21,246 --> 00:00:22,120
+PROFESSOR: All right.
+
+11
+00:00:22,120 --> 00:00:24,140
+So, we'll get started.
+

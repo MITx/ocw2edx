@@ -1,5 +1,0 @@
-BeautifulSoup==3.2.1
-PyYAML==3.10
-lxml==3.2.3
-path.py==4.3
-pyaml==13.07.1
