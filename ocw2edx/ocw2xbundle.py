@@ -109,14 +109,16 @@ class OCWCourse(object):
             parser = parser or etree.HTMLParser()
             return etree.fromstring(xmlstr, parser=parser)
 
-    def get_caption_file(self, url):
+    def get_caption_file(self, url, ytid=None):
         '''
         Retrieve srt caption file from OCW, convert to sjson, and store in static
         input urls are like /courses/physics/8-05-quantum-physics-ii-fall-2013/video-lectures/lecture-1-wave-mechanics/QI13S04w8dM.srt
         output filenames are like "static/subs_<ytid>.srt.sjson"
+
+        if ytid is specified, then make sure there is a srt.sjson file with that ytid (some OCW caption files don't use the ytid)
         '''
         srtfn = os.path.basename(url)
-        ytid = srtfn[:-4]
+        file_ytid = srtfn[:-4]
         ret = requests.get(url)
         if not ret.status_code==200:
             raise Exception("[OCWCourse.get_caption_file] Failed to retrieve %s" % url)
@@ -129,9 +131,15 @@ class OCWCourse(object):
         convert2sjson(srtfn, verbose=False)	# generate srt.sjson 
         sjfn = srtfn + ".sjson"        
         efn = "static/subs_%s" % sjfn.basename()
+        if ytid is not None:
+            yt_efn = "static/subs_%s.srt.sjson" % ytid
+            if efn != yt_efn:
+                print "        Caption file is named %s, but has ytid %s, so using for edx %s" % (sjfn.basename(), ytid, yt_efn)
+                efn = yt_efn
         self.files_to_copy[sjfn] = efn
         if self.verbose:
             print "        Got caption file %s -> %s" % (sjfn, efn)
+        return efn
 
     def fix_static(self, s):
         '''
@@ -184,27 +192,7 @@ class OCWCourse(object):
         '''
         popup = vxml.get('onclick')
         dn = vxml.text.strip()
-        m = re.search("youtube.com/v/([^']+)'",popup)
-        ytid = m.group(1)
-        video = etree.SubElement(vert, 'video')
-        video.set('youtube','1.0:%s' % ytid)
-        video.set('from', self.DefaultVideoStartPoint)	# default start point (skip OCW banner)
-
-        m = re.search('load_multiple_media_chapter\(.*,([ 0-9]+),([ 0-9]+),\snull\);', popup)
-        if m:
-            # print "    ", popup
-            def sec2code(secstr):
-                sec = int(secstr.strip())
-                c = '%02d:%02d:%02d' % (sec/3600, (sec/60)%60, sec%60)
-                # print "      %s (%s) -> %s" % (secstr, sec, c)
-                return c
-            video.set('from',sec2code(m.group(1)))
-            video.set('to',sec2code(m.group(2)))
-        
-        video.set('display_name','Video: ' + dn)
-        #print "      video: %s = %s" % (ytid, dn)
-        print "      video: %s = %s" % (etree.tostring(video), dn)
-
+        return self.add_video_from_script_element(dn, popup, vert, element_text = popup)
 
     def add_pdf_link_to_vert(self, pdffn, text, vert):
         '''
@@ -354,27 +342,53 @@ class OCWCourse(object):
         else:
             self.add_video_from_script_element(title, script, vert, extra_dict)
 
-    def add_video_from_script_element(self, title, script, vert, extra_dict=None):
+    def add_video_from_script_element(self, title, script, vert, extra_dict=None, element_text=None):
         '''
         Extract youtube id from <script> element and add to the edX OLX vert element as a <video>
+        
+        element_text is used instead of script.text, if provided
         '''
         extra_dict = extra_dict or {}
-        m = re.search("http[s]*://www.youtube.com/v/([^']+)'",script.text)
+        element_text = element_text or script.text
+        m = re.search("http[s]*://www.youtube.com/v/([^']+)'", element_text)
         if not m:
-            print "oops, cannot find youtube id in %s" % script.text
-        else:
-            ytid = m.group(1)
-            video = etree.SubElement(vert,'video')
-            video.set('youtube','1.0:%s' % ytid)
-            video.set('from','00:00:20')
-            for k, v in extra_dict.items():
-                video.set(k, v)
-            #video.set('display_name','Video: ' + vert.get('display_name','Page'))
-            video.set('display_name','Video: ' + title)
-            if self.verbose:
-                print "      video: %s = %s" % (ytid, title)
-                if self.verbose > 1:
-                    print "        (%s) %s" % (vert.get('display_name'), etree.tostring(video))
+            print "oops, cannot find youtube id in %s" % element_text
+            return
+
+        ytid = m.group(1)
+        video = etree.SubElement(vert,'video')
+        video.set('youtube','1.0:%s' % ytid)
+        video.set('from','00:00:20')
+
+        m = re.search('load_multiple_media_chapter\(.*,([ 0-9]+),([ 0-9]+),\s(null|.*\.srt\')\);', element_text)
+        if m:
+            # print "    ", popup
+            def sec2code(secstr):
+                sec = int(secstr.strip())
+                c = '%02d:%02d:%02d' % (sec/3600, (sec/60)%60, sec%60)
+                # print "      %s (%s) -> %s" % (secstr, sec, c)
+                return c
+            video.set('from',sec2code(m.group(1)))
+            video.set('to',sec2code(m.group(2)))
+            captions_url = m.group(3)
+            if captions_url.startswith("'"):
+                captions_url = captions_url[1:-1]
+            caption_url = "https://ocw.mit.edu" + captions_url
+            extra_dict['caption_url'] = caption_url
+            srtfn = self.get_caption_file(caption_url, ytid)
+
+        for k, v in extra_dict.items():
+            video.set(k, v)
+
+        #video.set('display_name','Video: ' + vert.get('display_name','Page'))
+        video.set('display_name','Video: ' + title)
+
+        if self.verbose:
+            print "      video: %s = %s" % (ytid, title)
+            if 'caption_url' in extra_dict:
+                print "          captions: %s (%s)" % (srtfn, extra_dict['caption_url'])
+            if self.verbose > 1:
+                print "        (%s) %s" % (vert.get('display_name'), etree.tostring(video))
             # print etree.tostring(html)
     
     
