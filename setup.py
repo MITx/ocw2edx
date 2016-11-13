@@ -33,6 +33,7 @@ setup(
                       'lxml',
                       'pyaml',
                       'requests',
+                      'jinja2',
                       ],
     dependency_links = [
         ],

@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import re
+import codecs
 import zipfile
 import shutil
 import tempfile
@@ -16,6 +17,7 @@ from srt2sjson import convert2sjson
 from lxml import etree
 from lxml.html.soupparser import fromstring as fsbs
 from path import path	# needs path.py
+from jinja2 import Template
 
 from xbundle import XBundle, DEF_POLICY_JSON, DEF_GRADING_POLICY_JSON
 
@@ -29,6 +31,8 @@ class OCWCourse(object):
     DefaultOrg = "OCW"
     # DefaultVideoStartPoint = '00:00:20'
     DefaultVideoStartPoint = '00:00:04'
+
+    LIBDIR = path(__file__).dirname() / "lib" 
 
     def __init__(self, fn=None, ofn=None, verbose=True, include_media=True, video_start_offset=0):
         '''
@@ -119,7 +123,12 @@ class OCWCourse(object):
         '''
         srtfn = os.path.basename(url)
         file_ytid = srtfn[:-4]
-        ret = requests.get(url)
+        try:
+            ret = requests.get(url)
+        except Exception as err:
+            print "ERROR!  Faild to get caption file from url %s" % url
+            print "Error=%s" % str(err)
+            raise
         if not ret.status_code==200:
             raise Exception("[OCWCourse.get_caption_file] Failed to retrieve %s" % url)
         sdir = self.dir / "captions"
@@ -147,12 +156,15 @@ class OCWCourse(object):
         '''
         if not s:
             return s
-        m = re.match('[\./]+/(contents|common|[^/ ]+)/.*', s)
+        sclean = s
+        if '#' in s and s.count('#')==1:
+            sclean = s.split('#')[0]
+        m = re.match('[\./]+/(contents|common|[^/ ]+)/.*', sclean)
         if not m:
             print "      WARNING: unknown static file path %s" % s
             return s
         prefix = m.group(1)
-        newpath = re.sub('[\./]+/%s/' % prefix, '/static/', s)
+        newpath = re.sub('[\./]+/%s/' % prefix, '/static/', sclean)
         if newpath.startswith('/static'):
             spath = self.dir / prefix + newpath[7:]
             epath = newpath[1:]
@@ -256,6 +268,20 @@ class OCWCourse(object):
             print "        ERROR: missing link in content %s" % etree.tostring(vxml)
             return self.add_text_to_vert(vxml, vert)
 
+        if href.startswith('http://www.youtube.com/watch') or href.startswith('https://www.yotube.com/watch'):
+            # add a video, assuming that vxml is something like <a href="http://www.youtube.com/watch?v=<ytid>">title</a>
+            title = vxml.text
+            ytid = href.split("/watch?v=")[1]
+            self.add_video_from_script_element(title, vxml, vert)
+
+        if href.startswith('http://') or href.startswith('https://'):
+            html = etree.SubElement(vert, 'html')
+            aelem = etree.SubElement(html, 'a')
+            aelem.set('href', href)
+            aelem.text = vxml.text
+            print "        External link %s -> %s" % (aelem.text, href)
+            return
+
         vfn = re.sub('[\./]+/contents/','contents/', href)
         if vfn.endswith('.pdf'):
             try:
@@ -266,14 +292,6 @@ class OCWCourse(object):
             return
 
         if vfn.endswith('.srt'):
-            return
-
-        if vfn.startswith('http://') or vfn.startswith('https://'):
-            html = etree.SubElement(vert, 'html')
-            aelem = etree.SubElement(html, 'a')
-            aelem.set('href', vfn)
-            aelem.text = vxml.text
-            print "        External link %s -> %s" % (aelem.text, vfn)
             return
             
         # process html file
@@ -367,27 +385,34 @@ class OCWCourse(object):
         else:
             self.add_video_from_script_element(title, script, vert, extra_dict)
 
-    def add_video_from_script_element(self, title, script, vert, extra_dict=None, element_text=None):
+    def add_video_from_script_element(self, title, script, vert, extra_dict=None, element_text=None, ytid=None):
         '''
         Extract youtube id from <script> element and add to the edX OLX vert element as a <video>
         
         element_text is used instead of script.text, if provided
+        ytid is used if specified, else extracted from element_text
         '''
         extra_dict = extra_dict or {}
         element_text = element_text or script.text
-        m = re.search("http[s]*://www.youtube.com/v/([^']+)'", element_text)
-        if not m:
-            print "oops, cannot find youtube id in %s" % element_text
-            return
 
-        ytid = m.group(1)
+        if not ytid:
+            m = re.search("http[s]*://www.youtube.com/v/([^']+)'", element_text)
+            if not m:
+                print "oops, cannot find youtube id in %s" % element_text
+                return
+            ytid = m.group(1)
+
         video = etree.SubElement(vert,'video')
         video.set('youtube','1.0:%s' % ytid)
         video.set('from', self.DefaultVideoStartPoint)
 
-        m = re.search('load_multiple_media_chapter\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);', element_text)
+        m = re.search('load_multiple_media_chapter\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);*', element_text)
         if not m:
-            m = re.search('scholar_video_popup\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);', element_text)
+            m = re.search('scholar_video_popup\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);*', element_text)
+        if not m:
+            m = re.search('ocw_embed_chapter_media\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);*', element_text)
+        if not m:
+            m = re.search('[a-z]+\(.*,\s*([ 0-9]+),\s*([ 0-9]+),\s*(null|.*\.srt\')\);', element_text)
         if m:
             # print "    ", popup
             def sec2code(secstr):
@@ -398,10 +423,11 @@ class OCWCourse(object):
             if m.group(2) != "0":
                 video.set('from',sec2code(m.group(1)))
                 video.set('to',sec2code(m.group(2)))
-            captions_url = m.group(3)
-            if captions_url.startswith("'"):
-                captions_url = captions_url[1:-1]
-            caption_url = "https://ocw.mit.edu" + captions_url
+            caption_url = m.group(3)
+            if caption_url.startswith("'"):
+                caption_url = caption_url[1:-1]
+            if not caption_url.startswith("http"):
+                caption_url = "https://ocw.mit.edu" + caption_url
             extra_dict['caption_url'] = caption_url
         else:
             if self.verbose and 'caption_url' not in extra_dict:
@@ -474,9 +500,12 @@ class OCWCourse(object):
     def process_html(self, title, display_name, ocw_xml, seq, handle_broken_xml=False):
         '''
         Process HTML section of OCW course content (turn into verticals, possibly wth video)
+
+        ocw_xml = OCW course XML element currently being parsed
+        seq = edX XML sequential element (where verticals are added)
         '''
         self.fix_javascript(ocw_xml)
-        intro = etree.SubElement(seq, 'html')	# add HTML module in the edX xml tree
+        intro = etree.SubElement(seq, 'html')	# add HTML module in the edX xml tree (should really go in a vertical, for studio, but xbundle fixes)
         if self.verbose:
             print '    Adding html: %s' % title
         intro.set('display_name', display_name)
@@ -512,6 +541,179 @@ class OCWCourse(object):
                 intro.append(p)
         if len(intro)==0:
             intro.getparent().remove(intro)	# remove intro if empty
+        else:
+            self.process_html_intro_for_table_of_pdf_files(intro, seq)
+
+    def process_html_intro_for_table_of_pdf_files(self, intro_xml, seq):
+        '''
+        Process HTML intro XML, and see if it has a table of links to PDF files.
+        If so, then create extra verticals in the sequential, with one vertical
+        for each PDF file.  Add PDF files so they display in the browser.  Extract
+        topic title from the table.   A common table has the format:
+
+            Session#  |  Topic          | Lecture Notes PDF
+            1         |  The First Law  | Lecture 1 PDF
+        ...
+
+        intro_xml = XML element for the HTML intro (in edX format)
+        seq = edX XML sequential element (should be the parent of intro_xml)
+        '''
+        tablediv = intro_xml.find('div[@class="maintabletemplate"]')
+        if tablediv is None:
+            return
+        table = tablediv.find("table")
+        tbody = table.find("tbody")
+        nrows = 0
+        nadded = 0
+        for tr in tbody.findall(".//tr"):
+            nrows += 1
+            rtstrings = [x.text for x in tr.findall("td") if x.text is not None]
+            if not rtstrings:
+                print "        Warning: empty row text"
+                rowtext = ""
+            else:
+                rowtext = (' '.join(rtstrings)).strip()
+            aelem = tr.find(".//a")
+            if aelem is None:
+                continue
+            rowtext  += " " + aelem.text
+            rowtext = rowtext.strip()
+            href = aelem.get('href')
+            if href.lower().endswith("pdf"):
+                self.add_pdf_vertical(rowtext, href, aelem, seq)
+                nadded += 1
+        summary = table.get('summary')
+        print "        Found table '%s' of PDFs, with %d rows: added %d pdf vertical pages" % (summary, nrows, nadded)
+
+    def add_javascript_file(self, jsfn):
+        '''
+        '''
+        fnp = self.LIBDIR / jsfn
+        if not fnp in self.files_to_copy:
+            self.files_to_copy[fnp] = "static/js/%s" % jsfn
+
+    def add_css_file(self, cssfn):
+        '''
+        '''
+        fnp = self.LIBDIR / cssfn
+        if not fnp in self.files_to_copy:
+            self.files_to_copy[fnp] = "static/css/%s" % cssfn
+
+    # PDF_VIEWER_TEMPLATE = path(__file__).dirname() / "lib" / "viewer.html"
+    # PDF_VIEWER_TEMPLATE = path(__file__).dirname() / "lib" / "viewer_simple.html"
+    PDF_VIEWER_TEMPLATE = LIBDIR / "viewer2.html"
+
+    PDF_VIEWER_JS = "pdf_viewer3a.js"
+    # PDF_VIEWER_CSS = [ "viewer2c.css"]
+    PDF_VIEWER_CSS = [ "viewer2e.css"]
+
+    def add_pdf_vertical(self, title, url, aelem, seq):
+        '''
+        Add vertical page to the edX sequential, showing the PDF specified by url, with title given.
+        '''
+        vert = etree.SubElement(seq, 'vertical')
+        vert.set('display_name', title)
+        problem = etree.SubElement(vert, 'problem')
+        problem.set('display_name', title)
+        text = etree.SubElement(problem, 'text')
+        problem.set("metatype", "pdf_file")
+        problem.set("pdf_filename", url)
+
+        if 1:
+            tem = codecs.open(self.PDF_VIEWER_TEMPLATE, encoding="utf8").read()
+            context = {"pdf_file_url": url,
+                       }
+            try:
+                viewer_html = Template(tem).render(**context)
+            except Exception as err:
+                print "Oops, cannot properly format PDF viewer template %s" % self.PDF_VIEWER_TEMPLATE
+                print "Error %s" % str(err)
+                print "context: ", json.dumps(context, indent=4)
+                raise
+    
+            try:
+                viewer_xml = etree.fromstring(viewer_html)
+            except Exception as err:
+                print "Oops, failed to properly generate PDF viewer XML from HTML, err=%s" % err
+                print "html = %s" % viewer_html
+                raise
+            text.append(viewer_xml)
+            self.add_javascript_file(self.PDF_VIEWER_JS)
+            for fn in self.PDF_VIEWER_CSS:
+                self.add_css_file(fn)
+
+        elif 0:
+            iframe = etree.SubElement(text, "iframe")
+            iframe.set("src", url)
+            iframe.set("width", "100%")
+            iframe.set("height", "100%")
+            iframe.text = "This browser does not support PDF viewing. Please download the PDF to view it"
+            iae = etree.SubElement(iframe, 'a')
+        elif 0:
+            embed = etree.SubElement(text, "object")
+            embed.set("data", url)
+            embed.set("type", "application/pdf")
+            embed.set("width", "100%")
+            embed.set("height", "100%")
+            embed.text = "This browser does not support PDF viewing. Please download the PDF to view it"
+            iae = etree.SubElement(embed, 'a')
+        elif 0:
+            embed = etree.SubElement(text, "span")
+            canvas = etree.SubElement(embed, "canvas")
+            canvas.set("id", "the-canvas")
+            canvas.set("style", "border:1px solid black;")
+            script = etree.SubElement(embed, "script")
+            script.set("src", "https://mozilla.github.io/pdf.js/build/pdf.js")
+            script.set("type", "text/javascript")
+            script1 = etree.SubElement(embed, "script")
+            script1.set("src", "https://mozilla.github.io/pdf.js/build/pdf.worker.js")
+            script1.set("type", "text/javascript")
+            script2 = etree.SubElement(embed, "script")
+            script2.set("type", "text/javascript")
+            script2.text = """
+show_pdf = function(){
+ PDFJS.getDocument('%s').then(function(pdf) {
+  // Using promise to fetch the page
+  pdf.getPage(1).then(function(page) {
+    var scale = 1.5;
+    var viewport = page.getViewport(scale);
+
+    //
+    // Prepare canvas using PDF page dimensions
+    //
+    var canvas = document.getElementById('the-canvas');
+    var context = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    //
+    // Render PDF page into canvas context
+    //
+    var renderContext = {
+      canvasContext: context,
+      viewport: viewport
+    };
+    page.render(renderContext);
+  });
+ });
+};
+
+wait_load = function(){
+    if (typeof PDFJS == "undefined"){
+        setTimeout(wait_load, 500);
+        return 0;
+    }else{
+        show_pdf();
+    }
+}
+
+wait_load();
+""" % url
+            # iae = etree.SubElement(embed, 'a')
+
+        if 0:
+            iae.set('href', url)
+            iae.text = aelem.text
 
     def robust_get_main(self, fn, ocw_xml, idname, tags=None):
         '''
@@ -547,7 +749,7 @@ class OCWCourse(object):
         We are given the <a> for the OCW section, and the XML handle for the
         sequential where the contents should go.
 
-        sxml = seq <a> from scholar
+        sxml = seq <a> from OCW course
         seq = edX sequential
         '''
         href = sxml.get('href')
@@ -750,6 +952,16 @@ class OCWCourse(object):
         xb.set_course(edxxml)
         xb.add_policies(policies)
         self.add_about_files(xb)
+
+        if self.verbose:
+            def c(x):
+                return len(xb.course.findall(".//%s" % x))
+            print "==> xbundle: %d chapters, %d sequentials, %d verticals, %d problems, %d html, %d video" % (c("chapter"),
+                                                                                                              c("sequential"),
+                                                                                                              c("vertical"),
+                                                                                                              c("problem"),
+                                                                                                              c("html"),
+                                                                                                              c("video"))
 
         # save it
         outfn = self.output_fn or ('%s_xbundle.xml' % self.cid)
