@@ -576,7 +576,7 @@ class OCWCourse(object):
             aelem = tr.find(".//a")
             if aelem is None:
                 continue
-            rowtext  += " " + aelem.text
+            rowtext  += " " + (aelem.text or "")
             rowtext = rowtext.strip()
             href = aelem.get('href')
             if href.lower().endswith("pdf"):
