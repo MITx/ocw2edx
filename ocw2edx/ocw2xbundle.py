@@ -163,7 +163,7 @@ class OCWCourse(object):
             sclean = s.split('#')[0]
         if s.startswith("/static"):
             print "        URL %s already is in /static, not fixing" % s
-            return
+            return s
         m = re.match('[\./]+/(contents|common|[^/ ]+)/.*', sclean)
         if not m:
             print "      WARNING: unknown static file path %s" % s
@@ -699,6 +699,7 @@ class OCWCourse(object):
             self.add_javascript_file(self.PDF_VIEWER_JS)
             for fn in self.PDF_VIEWER_CSS:
                 self.add_css_file(fn)
+            print "        Added PDF viewer title '%s' for file %s" % (dn, url)
 
     def robust_get_main(self, fn, ocw_xml, idname, tags=None):
         '''
