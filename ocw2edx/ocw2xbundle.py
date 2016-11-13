@@ -18,6 +18,8 @@ from lxml import etree
 from lxml.html.soupparser import fromstring as fsbs
 from path import path	# needs path.py
 from jinja2 import Template
+from collections import defaultdict
+from xml.sax.saxutils import quoteattr
 
 from xbundle import XBundle, DEF_POLICY_JSON, DEF_GRADING_POLICY_JSON
 
@@ -285,7 +287,10 @@ class OCWCourse(object):
         vfn = re.sub('[\./]+/contents/','contents/', href)
         if vfn.endswith('.pdf'):
             try:
-                self.add_pdf_link_to_vert(vfn, vxml.text, vert)
+                if 0:
+                    self.add_pdf_link_to_vert(vfn, vxml.text, vert)			# just a link
+                else:
+                    self.add_pdf_vertical(vxml.text, href, None, None, vert=vert)	# use viewer, not just a link
             except Exception as err:
                 print "Error adding pdf link in vertical, vfn=%s, text=%s" % (vfn, vxml.text)
                 print "error=%s" % str(err)
@@ -467,6 +472,7 @@ class OCWCourse(object):
         Process media gallery section of OCW course content (turn into verticals)
         '''
         nav = ocw_xml
+        self.element_counts['media_gallery'] += 1
         for div in nav:				# include all content in the HTML as an introduction
             if div.get('class','') in ['media_rss_link']:
                 continue
@@ -504,6 +510,7 @@ class OCWCourse(object):
         ocw_xml = OCW course XML element currently being parsed
         seq = edX XML sequential element (where verticals are added)
         '''
+        self.element_counts['course_inner_section'] += 1
         self.fix_javascript(ocw_xml)
         intro = etree.SubElement(seq, 'html')	# add HTML module in the edX xml tree (should really go in a vertical, for studio, but xbundle fixes)
         if self.verbose:
@@ -561,6 +568,7 @@ class OCWCourse(object):
         tablediv = intro_xml.find('div[@class="maintabletemplate"]')
         if tablediv is None:
             return
+        self.element_counts['main_table_template'] += 1
         table = tablediv.find("table")
         tbody = table.find("tbody")
         nrows = 0
@@ -607,21 +615,48 @@ class OCWCourse(object):
     # PDF_VIEWER_CSS = [ "viewer2c.css"]
     PDF_VIEWER_CSS = [ "viewer2e.css"]
 
-    def add_pdf_vertical(self, title, url, aelem, seq):
+    @staticmethod
+    def _escape(s):
+        '''
+        Escape string s for use in an XML attribute.  Always escape quotes.
+        '''
+        s2 = quoteattr(s)
+        s2 = s2.replace('"', "&quot;")
+        return s2
+
+    def add_pdf_vertical(self, title, url, aelem, seq, vert=None):
         '''
         Add vertical page to the edX sequential, showing the PDF specified by url, with title given.
+        Make this an edX problem (for OCW, assumes PDFs are assessments)
         '''
-        vert = etree.SubElement(seq, 'vertical')
-        vert.set('display_name', title)
+        if url in self.processed_pdf_files:
+            print "        Already processed PDF file %s - skipping" % url
+            return
+        self.processed_pdf_files.append(url)
+        self.element_counts['pdf_file'] += 1
+
+        if not title:
+            title = "PDF file %s" % url
+
+        dn = title	# use title as display name, but shorter if too long
+        if len(dn) > 60:
+            dn = dn[:40] + "..." + dn[-17:]
+
+        if not vert:
+            vert = etree.SubElement(seq, 'vertical')
+        vert.set('display_name', dn)
         problem = etree.SubElement(vert, 'problem')
-        problem.set('display_name', title)
+        problem.set('display_name', dn)
         text = etree.SubElement(problem, 'text')
         problem.set("metatype", "pdf_file")
         problem.set("pdf_filename", url)
+        problem.set("pdf_title", title)
 
         if 1:
             tem = codecs.open(self.PDF_VIEWER_TEMPLATE, encoding="utf8").read()
             context = {"pdf_file_url": url,
+                       "title": self._escape(title),
+                       "display_name": self._escape(dn),
                        }
             try:
                 viewer_html = Template(tem).render(**context)
@@ -641,79 +676,6 @@ class OCWCourse(object):
             self.add_javascript_file(self.PDF_VIEWER_JS)
             for fn in self.PDF_VIEWER_CSS:
                 self.add_css_file(fn)
-
-        elif 0:
-            iframe = etree.SubElement(text, "iframe")
-            iframe.set("src", url)
-            iframe.set("width", "100%")
-            iframe.set("height", "100%")
-            iframe.text = "This browser does not support PDF viewing. Please download the PDF to view it"
-            iae = etree.SubElement(iframe, 'a')
-        elif 0:
-            embed = etree.SubElement(text, "object")
-            embed.set("data", url)
-            embed.set("type", "application/pdf")
-            embed.set("width", "100%")
-            embed.set("height", "100%")
-            embed.text = "This browser does not support PDF viewing. Please download the PDF to view it"
-            iae = etree.SubElement(embed, 'a')
-        elif 0:
-            embed = etree.SubElement(text, "span")
-            canvas = etree.SubElement(embed, "canvas")
-            canvas.set("id", "the-canvas")
-            canvas.set("style", "border:1px solid black;")
-            script = etree.SubElement(embed, "script")
-            script.set("src", "https://mozilla.github.io/pdf.js/build/pdf.js")
-            script.set("type", "text/javascript")
-            script1 = etree.SubElement(embed, "script")
-            script1.set("src", "https://mozilla.github.io/pdf.js/build/pdf.worker.js")
-            script1.set("type", "text/javascript")
-            script2 = etree.SubElement(embed, "script")
-            script2.set("type", "text/javascript")
-            script2.text = """
-show_pdf = function(){
- PDFJS.getDocument('%s').then(function(pdf) {
-  // Using promise to fetch the page
-  pdf.getPage(1).then(function(page) {
-    var scale = 1.5;
-    var viewport = page.getViewport(scale);
-
-    //
-    // Prepare canvas using PDF page dimensions
-    //
-    var canvas = document.getElementById('the-canvas');
-    var context = canvas.getContext('2d');
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
-
-    //
-    // Render PDF page into canvas context
-    //
-    var renderContext = {
-      canvasContext: context,
-      viewport: viewport
-    };
-    page.render(renderContext);
-  });
- });
-};
-
-wait_load = function(){
-    if (typeof PDFJS == "undefined"){
-        setTimeout(wait_load, 500);
-        return 0;
-    }else{
-        show_pdf();
-    }
-}
-
-wait_load();
-""" % url
-            # iae = etree.SubElement(embed, 'a')
-
-        if 0:
-            iae.set('href', url)
-            iae.text = aelem.text
 
     def robust_get_main(self, fn, ocw_xml, idname, tags=None):
         '''
@@ -939,8 +901,11 @@ wait_load();
         
         self.processed_files = [fn]		# track which content files have been ingested, to avoid duplication
         self.files_to_copy = {}			# dict of files (key=OCW source, val=edX static dest) to copy to "/static"
+        self.processed_pdf_files = []
+        self.element_counts = defaultdict(int)
+
         self.do_chapters(sxml, edxxml)
-    
+
         policies = self.policies
 
         # grab course image via index.htm
@@ -953,15 +918,12 @@ wait_load();
         xb.add_policies(policies)
         self.add_about_files(xb)
 
-        if self.verbose:
-            def c(x):
-                return len(xb.course.findall(".//%s" % x))
-            print "==> xbundle: %d chapters, %d sequentials, %d verticals, %d problems, %d html, %d video" % (c("chapter"),
-                                                                                                              c("sequential"),
-                                                                                                              c("vertical"),
-                                                                                                              c("problem"),
-                                                                                                              c("html"),
-                                                                                                              c("video"))
+        def c(x):
+            return len(xb.course.findall(".//%s" % x))
+        elist = ["chapter", "sequential", "vertical", "problem", "html", "video"]
+        xbundle_counts = {x:c(x) for x in elist}
+        self.element_counts['n_static_files'] = len(self.files_to_copy)
+        self.element_counts['n_ocw_files_processed'] = len(self.processed_files)
 
         # save it
         outfn = self.output_fn or ('%s_xbundle.xml' % self.cid)
@@ -985,6 +947,9 @@ wait_load();
                 os.mkdir(outfn)
             self.copy_static_files(outfn)
             xb.export_to_directory(outfn, dir_include_course_id=False)
+
+        print "OCW element counts: %s" % json.dumps(self.element_counts, indent=4)
+        print "edX XML element counts: %s" % json.dumps(xbundle_counts, indent=4)
         print "Done, wrote to %s" % outfn
     
 
