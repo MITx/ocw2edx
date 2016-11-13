@@ -553,6 +553,7 @@ class OCWCourse(object):
                     vert = etree.SubElement(seq,'vertical')
                     vert.set('display_name',dn)
                     self.add_contents_to_vert(a, vert)
+                    self.process_edx_xml_for_local_pdf_links(vert, seq)
             else:
                 self.do_href(p)
                 intro.append(p)
@@ -560,6 +561,38 @@ class OCWCourse(object):
             intro.getparent().remove(intro)	# remove intro if empty
         else:
             self.process_html_intro_for_table_of_pdf_files(intro, seq)
+            self.process_edx_xml_for_local_pdf_links(intro, seq)
+
+    def process_edx_xml_for_local_pdf_links(self, xml, seq):
+        '''
+        Process an edX XML block, and see if any links are local PDF files
+        which haven't yet been processed.  For each such link, generate
+        a PDF vertical with an embedded PDF viewer.
+        '''
+        n_found = 0
+        n_added = 0
+        n_links = 0
+        dn = xml.get('display_name')
+        for aelem in xml.findall('.//a'):
+            n_links += 1
+            href = aelem.get('href')
+            print "           link: %s (%s)" % (aelem.text, href)
+            if not href:
+                continue
+            if not href.lower().endswith(".pdf"):
+                continue
+            if href.startswith("http"):
+                continue
+            n_found += 1
+            if aelem.get('pdf_processed')==1:
+                continue
+            title = aelem.text or ("File %s" % os.path.basename(href))
+            self.add_pdf_vertical(title, href, aelem, seq)
+            aelem.set("pdf_processed", "1")				# so it isn't done again
+            n_added += 1
+        if 1 or n_found:
+            print "        [%s] Found %s links, %s are local PDF, %d new ones added as vertical pages" % (dn, n_links, n_found, n_added)
+            
 
     def process_html_intro_for_table_of_pdf_files(self, intro_xml, seq):
         '''
@@ -601,6 +634,7 @@ class OCWCourse(object):
             href = aelem.get('href')
             if href and href.lower().endswith("pdf"):
                 self.add_pdf_vertical(rowtext, href, aelem, seq)
+                aelem.set("pdf_processed", "1")				# so it isn't done again
                 nadded += 1
         summary = table.get('summary')
         print "        Found table '%s' of PDFs, with %d rows: added %d pdf vertical pages" % (summary, nrows, nadded)
