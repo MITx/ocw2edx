@@ -431,15 +431,19 @@ class OCWCourse(object):
             caption_url = m.group(3)
             if caption_url.startswith("'"):
                 caption_url = caption_url[1:-1]
-            if not caption_url.startswith("http"):
-                caption_url = "https://ocw.mit.edu" + caption_url
-            extra_dict['caption_url'] = caption_url
+            if not caption_url=="null":
+                if not caption_url.startswith("http"):
+                    caption_url = "https://ocw.mit.edu" + caption_url
+                extra_dict['caption_url'] = caption_url
         else:
             if self.verbose and 'caption_url' not in extra_dict:
                 print "        no caption found in %s" % element_text
 
         if 'caption_url' in extra_dict:
-            srtfn = self.get_caption_file(extra_dict['caption_url'], ytid)
+            if extra_dict['caption_url']=="null":
+                extra_dict.pop("caption_url")
+            else:
+                srtfn = self.get_caption_file(extra_dict['caption_url'], ytid)
 
         for k, v in extra_dict.items():
             video.set(k, v)
@@ -568,9 +572,11 @@ class OCWCourse(object):
         tablediv = intro_xml.find('div[@class="maintabletemplate"]')
         if tablediv is None:
             return
-        self.element_counts['main_table_template'] += 1
         table = tablediv.find("table")
+        if table is None:
+            return
         tbody = table.find("tbody")
+        self.element_counts['main_table_template'] += 1
         nrows = 0
         nadded = 0
         for tr in tbody.findall(".//tr"):
@@ -587,7 +593,7 @@ class OCWCourse(object):
             rowtext  += " " + (aelem.text or "")
             rowtext = rowtext.strip()
             href = aelem.get('href')
-            if href.lower().endswith("pdf"):
+            if href and href.lower().endswith("pdf"):
                 self.add_pdf_vertical(rowtext, href, aelem, seq)
                 nadded += 1
         summary = table.get('summary')
