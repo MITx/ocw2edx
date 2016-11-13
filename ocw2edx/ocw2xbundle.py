@@ -161,6 +161,9 @@ class OCWCourse(object):
         sclean = s
         if '#' in s and s.count('#')==1:
             sclean = s.split('#')[0]
+        if s.startswith("/static"):
+            print "        URL %s already is in /static, not fixing" % s
+            return
         m = re.match('[\./]+/(contents|common|[^/ ]+)/.*', sclean)
         if not m:
             print "      WARNING: unknown static file path %s" % s
@@ -233,7 +236,10 @@ class OCWCourse(object):
         '''
         Add <html> with link to PDF file to vertical
         '''
-        newpath = self.fix_static('../' + pdffn)
+        if not pdffn.startswith("http"):
+            newpath = self.fix_static('../' + pdffn)
+        else:
+            newpath = pdffn
         dn = text.strip()
         html = etree.SubElement(vert, 'html')
         aelem = etree.SubElement(html, 'a')
@@ -285,7 +291,7 @@ class OCWCourse(object):
             return
 
         vfn = re.sub('[\./]+/contents/','contents/', href)
-        if vfn.endswith('.pdf'):
+        if vfn and vfn.lower().endswith('.pdf'):
             try:
                 if 0:
                     self.add_pdf_link_to_vert(vfn, vxml.text, vert)			# just a link
@@ -635,11 +641,22 @@ class OCWCourse(object):
         Add vertical page to the edX sequential, showing the PDF specified by url, with title given.
         Make this an edX problem (for OCW, assumes PDFs are assessments)
         '''
+        local_url = self.fix_static(url)
+        if not local_url:
+            return
+        if local_url.startswith("http"):
+            if vert is None:
+                vert = etree.SubElement(seq, 'vertical')
+            print "        Using link - PDF is not local: %s" % local_url
+            self.add_pdf_link_to_vert(local_url, title, vert)
+            return 
         if url in self.processed_pdf_files:
             print "        Already processed PDF file %s - skipping" % url
             return
         self.processed_pdf_files.append(url)
         self.element_counts['pdf_file'] += 1
+
+        url = local_url
 
         if not title:
             title = "PDF file %s" % url
@@ -648,7 +665,7 @@ class OCWCourse(object):
         if len(dn) > 60:
             dn = dn[:40] + "..." + dn[-17:]
 
-        if not vert:
+        if vert is None:
             vert = etree.SubElement(seq, 'vertical')
         vert.set('display_name', dn)
         problem = etree.SubElement(vert, 'problem')
